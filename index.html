@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Wildwood Walk</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; overflow: hidden; background: #101914; color: #f5f3e9;
+    font: 15px system-ui, sans-serif; touch-action: none;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  button, select {
+    border: 1px solid #ffffff44; border-radius: 12px; color: white;
+    background: #17241edc; font: inherit; padding: 11px 14px;
+  }
+  button { cursor: pointer; }
+  #menuButton { position: fixed; top: 14px; left: 14px; z-index: 3; }
+  #menu {
+    display: none; position: fixed; top: 62px; left: 14px; z-index: 3;
+    width: min(290px, calc(100vw - 28px)); padding: 16px;
+    background: #17241ef2; border: 1px solid #ffffff33; border-radius: 16px;
+    box-shadow: 0 12px 40px #0008;
+  }
+  #menu h2 { margin: 0 0 12px; font-size: 18px; }
+  #menu label { display: block; margin: 12px 0; color: #d3ddcf; }
+  #menu select { display: block; width: 100%; margin-top: 6px; }
+  #status {
+    position: fixed; top: 16px; right: 14px; padding: 9px 13px;
+    border-radius: 12px; background: #17241ebf; font-size: 13px;
+  }
+  #help {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    padding: 8px 12px; border-radius: 10px; text-align: center;
+    background: #17241ebf; font-size: 12px; white-space: nowrap;
+  }
+  #touch {
+    display: none; position: fixed; bottom: 24px; left: 16px; right: 16px;
+    justify-content: space-between; align-items: end; pointer-events: none;
+  }
+  .pad { display: grid; grid-template-columns: repeat(3, 54px); gap: 6px; pointer-events: auto; }
+  .pad button { width: 54px; height: 50px; padding: 0; font-size: 20px; background: #17241ecc; }
+  .pad .empty { visibility: hidden; }
+  @media (pointer: coarse) {
+    #touch { display: flex; }
+    #help { bottom: 145px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<button id="menuButton" aria-expanded="false">☰ Explorer</button>
+<section id="menu">
+  <h2>Explorer style</h2>
+  <label>Hair
+    <select id="hair">
+      <option value="#3b241b">Chestnut</option>
+      <option value="#161513">Midnight</option>
+      <option value="#bd8044">Copper</option>
+      <option value="#d7c27c">Golden</option>
+    </select>
+  </label>
+  <label>Jacket
+    <select id="jacket">
+      <option value="#55735a">Forest green</option>
+      <option value="#8a593f">Earth brown</option>
+      <option value="#586d89">Slate blue</option>
+      <option value="#a18b57">Trail tan</option>
+    </select>
+  </label>
+  <label>Boots
+    <select id="boots">
+      <option value="#30251d">Dark leather</option>
+      <option value="#59402b">Brown leather</option>
+      <option value="#343b3c">Charcoal</option>
+    </select>
+  </label>
+  <button id="closeMenu">Done</button>
+</section>
+<div id="status">Dry trail</div>
+<div id="help">WASD / arrows to walk · drag to look · avoid deep water</div>
+<div id="touch">
+  <div class="pad">
+    <button class="empty"></button><button data-key="w">▲</button><button class="empty"></button>
+    <button data-key="a">◀</button><button data-key="s">▼</button><button data-key="d">▶</button>
+  </div>
+  <div class="pad">
+    <button class="empty"></button><button data-key="ArrowLeft">↶</button><button class="empty"></button>
+    <button class="empty"></button><button data-key="ArrowDown">•</button><button data-key="ArrowRight">↷</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.querySelector("#game");
+  const ctx = canvas.getContext("2d");
+  const status = document.querySelector("#status");
+  const keys = new Set();
+  const player = { x: 0, z: 0, yaw: 0 };
+  const style = { hair: "#3b241b", jacket: "#55735a", boots: "#30251d" };
+
+  function resize() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    canvas.width = innerWidth * dpr;
+    canvas.height = innerHeight * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  addEventListener("resize", resize);
+  resize();
+
+  let seed = 19371;
+  function rand() {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  }
+  const trees = Array.from({ length: 240 }, () => ({
+    x: (rand() - 0.5) * 280, z: rand() * 1050 - 20,
+    size: 0.7 + rand() * 0.8, kind: rand()
+  }));
+
+  const bogs = [
+    { x: -7, z: 22, r: 5 }, { x: 8, z: 52, r: 7 },
+    { x: -13, z: 91, r: 6 }, { x: 11, z: 132, r: 8 },
+    { x: -4, z: 188, r: 9 }
+  ];
+  const rivers = [{ z: 72, width: 26 }, { z: 246, width: 34 }];
+
+  function project(x, z) {
+    const dx = x - player.x, dz = z - player.z;
+    const c = Math.cos(player.yaw), s = Math.sin(player.yaw);
+    const forward = dx * s + dz * c;
+    const side = dx * c - dz * s;
+    if (forward < 1.5) return null;
+    const focal = Math.min(innerWidth, innerHeight) * 0.82;
+    const scale = focal / forward;
+    return { x: innerWidth / 2 + side * scale, y: innerHeight * 0.48 + scale * 1.05, scale, forward };
+  }
+
+  function drawBackground() {
+    const w = innerWidth, h = innerHeight;
+    const sky = ctx.createLinearGradient(0, 0, 0, h * 0.58);
+    sky.addColorStop(0, "#91b5bd"); sky.addColorStop(1, "#d4d5b3");
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h * 0.56);
+    const ground = ctx.createLinearGradient(0, h * 0.48, 0, h);
+    ground.addColorStop(0, "#667457"); ground.addColorStop(1, "#28372b");
+    ctx.fillStyle = ground; ctx.fillRect(0, h * 0.48, w, h * 0.52);
+
+    for (let i = 0; i < 32; i++) {
+      const x = (i / 31) * w;
+      const ht = 28 + (i * 17 % 45);
+      ctx.fillStyle = i % 2 ? "#405d4b" : "#4d684f";
+      ctx.beginPath(); ctx.moveTo(x - 25, h * 0.52); ctx.lineTo(x, h * 0.52 - ht);
+      ctx.lineTo(x + 25, h * 0.52); ctx.fill();
+    }
+  }
+
+  function drawPatch(x, z, radius, color) {
+    const p = project(x, z);
+    if (!p || p.forward > 230) return;
+    const rx = Math.max(2, radius * p.scale);
+    const ry = Math.max(1, rx * 0.23);
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#ffffff22"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(p.x, p.y, rx * 0.68, ry * 0.62, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  function drawTree(tree) {
+    const p = project(tree.x, tree.z);
+    if (!p || p.forward > 250) return;
+    const trunkH = Math.min(420, p.scale * 3.2 * tree.size);
+    const trunkW = Math.max(2, trunkH * 0.12);
+    ctx.fillStyle = "#493a2a";
+    ctx.fillRect(p.x - trunkW / 2, p.y - trunkH, trunkW, trunkH);
+    const crown = trunkH * (tree.kind > 0.5 ? 0.46 : 0.57);
+    ctx.fillStyle = tree.kind > 0.5 ? "#31503d" : "#3e6045";
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - trunkH - crown);
+    ctx.lineTo(p.x - crown * 0.67, p.y - trunkH + crown * 0.12);
+    ctx.lineTo(p.x + crown * 0.67, p.y - trunkH + crown * 0.12);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#ffffff12";
+    ctx.beginPath(); ctx.arc(p.x - crown * 0.12, p.y - trunkH - crown * 0.38, crown * 0.12, 0, Math.PI * 2); ctx.fill();
+  }
+
+  function drawBody() {
+    const w = innerWidth, h = innerHeight;
+    ctx.fillStyle = style.jacket;
+    ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(0, h * .79); ctx.lineTo(w * .18, h * .91);
+    ctx.lineTo(w * .23, h); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(w, h); ctx.lineTo(w, h * .79); ctx.lineTo(w * .82, h * .91);
+    ctx.lineTo(w * .77, h); ctx.fill();
+
+    ctx.fillStyle = "#c8916e";
+    ctx.beginPath(); ctx.ellipse(w * .18, h * .91, w * .045, h * .027, -.25, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(w * .82, h * .91, w * .045, h * .027, .25, 0, Math.PI * 2); ctx.fill();
+
+    ctx.fillStyle = style.boots;
+    ctx.beginPath(); ctx.moveTo(w * .34, h); ctx.lineTo(w * .39, h * .93); ctx.lineTo(w * .47, h * .95);
+    ctx.lineTo(w * .48, h); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(w * .66, h); ctx.lineTo(w * .61, h * .93); ctx.lineTo(w * .53, h * .95);
+    ctx.lineTo(w * .52, h); ctx.fill();
+  }
+
+  function draw() {
+    const w = innerWidth, h = innerHeight;
+    drawBackground();
+
+    for (const river of rivers) {
+      const p = project(0, river.z);
+      if (p && p.forward < 260) {
+        const half = river.width * p.scale;
+        ctx.fillStyle = "#547f83";
+        ctx.fillRect(w / 2 - half, p.y - 5, half * 2, 12);
+        ctx.fillStyle = "#b1d0c177";
+        for (let i = -2; i <= 2; i++) {
+          ctx.fillRect(w / 2 + i * half * .28, p.y - 2 + (i % 2) * 4, half * .14, 1.5);
+        }
+      }
+    }
+
+    bogs.forEach(b => drawPatch(b.x, b.z, b.r, "#3d3829"));
+    trees.slice().sort((a, b) => b.z - a.z).forEach(drawTree);
+    drawBody();
+
+    const inRiver = rivers.some(r => Math.abs(player.z - r.z) < 2.2 && Math.abs(player.x) < r.width / 2);
+    const inBog = bogs.some(b => Math.hypot(player.x - b.x, player.z - b.z) < b.r);
+    status.textContent = inRiver ? "In the river — move to the bank!" : inBog ? "Sticky bog — movement slowed" : "Exploring the woods";
+    status.style.color = inRiver ? "#b6e5f0" : inBog ? "#e4c78c" : "#f5f3e9";
+  }
+
+  let last = performance.now();
+  function update(now) {
+    const dt = Math.min((now - last) / 1000, 0.04);
+    last = now;
+    const turn = (keys.has("arrowright") ? 1 : 0) - (keys.has("arrowleft") ? 1 : 0);
+    player.yaw += turn * dt * 1.8;
+
+    const forward = (keys.has("w") || keys.has("arrowup") ? 1 : 0) -
+                    (keys.has("s") || keys.has("arrowdown") ? 1 : 0);
+    const strafe = (keys.has("d") ? 1 : 0) - (keys.has("a") ? 1 : 0);
+    const bog = bogs.some(b => Math.hypot(player.x - b.x, player.z - b.z) < b.r);
+    const river = rivers.some(r => Math.abs(player.z - r.z) < 2.2 && Math.abs(player.x) < r.width / 2);
+    const speed = (bog ? 1.1 : river ? 0.8 : 4.2) * dt;
+    player.x += (Math.cos(player.yaw) * strafe + Math.sin(player.yaw) * forward) * speed;
+    player.z += (-Math.sin(player.yaw) * strafe + Math.cos(player.yaw) * forward) * speed;
+    player.x = Math.max(-120, Math.min(120, player.x));
+    player.z = Math.max(-15, Math.min(1000, player.z));
+
+    draw();
+    requestAnimationFrame(update);
+  }
+  requestAnimationFrame(update);
+
+  addEventListener("keydown", e => {
+    const key = e.key.toLowerCase();
+    if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(key)) e.preventDefault();
+    keys.add(key);
+  });
+  addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
+  addEventListener("blur", () => keys.clear());
+
+  document.querySelectorAll("[data-key]").forEach(button => {
+    const key = button.dataset.key.toLowerCase();
+    button.addEventListener("pointerdown", e => { e.preventDefault(); keys.add(key); button.setPointerCapture(e.pointerId); });
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach(type =>
+      button.addEventListener(type, () => keys.delete(key))
+    );
+  });
+
+  let dragging = false, previousX = 0;
+  canvas.addEventListener("pointerdown", e => { dragging = true; previousX = e.clientX; });
+  canvas.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    player.yaw += (e.clientX - previousX) * 0.004;
+    previousX = e.clientX;
+  });
+  addEventListener("pointerup", () => dragging = false);
+
+  const menu = document.querySelector("#menu");
+  document.querySelector("#menuButton").onclick = () => {
+    const open = menu.style.display !== "block";
+    menu.style.display = open ? "block" : "none";
+    document.querySelector("#menuButton").setAttribute("aria-expanded", open);
+  };
+  document.querySelector("#closeMenu").onclick = () => menu.style.display = "none";
+  for (const name of ["hair", "jacket", "boots"]) {
+    document.querySelector("#" + name).addEventListener("change", e => style[name] = e.target.value);
+  }
+})();
+</script>
+</body>
+</html>
